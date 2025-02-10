@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet}, env, process::Command, ptr, thread::{self}, time::Duration
+    cmp::max, collections::{HashMap, HashSet}, env, process::Command, ptr, thread::{self}, time::Duration
 };
 use libc::{shmat, shmctl, shmget, shmdt, IPC_CREAT, IPC_RMID};
 use smallvec::SmallVec;
@@ -136,8 +136,6 @@ pub fn reduce_candidates(cmd: &str, candidates: HashSet<usize>, map_size: usize)
     }
 
 
-    cleanup(shm_addr, shm_id);
-
     let mut final_candidates = vec![];
     let mut cands = HashSet::new();
     for can in candidate_performance.keys(){
@@ -158,6 +156,9 @@ pub fn reduce_candidates(cmd: &str, candidates: HashSet<usize>, map_size: usize)
             largest = i;
         }
     }
+
+    cleanup(shm_addr, shm_id);
+
     (final_candidates, largest)
 }
 
@@ -201,6 +202,8 @@ pub fn find_candidates(cmd: &str, amount: u8, map_size: usize) -> Vec<usize>{
 
     }
 
+    // print_cov_map();
+
     cleanup(shm_addr, shm_id);
 
     candidates
@@ -241,7 +244,7 @@ pub fn majority_vote_counters(all_counters: &Vec<u16>) -> usize {
 /// @param known_counters: All counters that should be skipped
 /// @param max_val: Large counter index (for optimization)
 /// @param map_size: Size of shared memory map
-pub fn track_coverage(cmd: &str, indicators: &Vec<usize>, known_counters: &HashSet<usize>, max_val: usize, map_size: usize) -> (Vec<(u16, usize)>, HashSet<usize>, bool){
+pub fn track_coverage(cmd: &str, indicators: &Vec<usize>, known_counters: &HashSet<usize>, max_val: usize, map_size: usize, zero_wrap: bool) -> (Vec<(u16, usize)>, HashSet<usize>, bool){
     let shm_addr_o = setup(map_size);
     if shm_addr_o.is_none(){
         return (vec![], HashSet::new(), false);
@@ -271,7 +274,7 @@ pub fn track_coverage(cmd: &str, indicators: &Vec<usize>, known_counters: &HashS
 
         for &i in build_iter.iter() {            
             let hit_count = unsafe { *shm_addr.add(i) };
-            if hit_count == 0{
+            if hit_count == 0 && (!zero_wrap || prev_coverage[i] == 0){
                 continue;
             }
 
@@ -285,7 +288,7 @@ pub fn track_coverage(cmd: &str, indicators: &Vec<usize>, known_counters: &HashS
             prev_coverage[i] += abs as u16;
             if indicators.contains(&i) {
                 actual_coverage[i] += abs as u16;
-                if wrapped{
+                if wrapped && !zero_wrap{
                     actual_coverage[i] -= 1;
                 }
     
@@ -297,7 +300,10 @@ pub fn track_coverage(cmd: &str, indicators: &Vec<usize>, known_counters: &HashS
             let ind_vals: Vec<u16> = indicators.iter().map(|&ind| actual_coverage[ind]).collect();
         
             let cind = majority_vote_counters(&ind_vals) ;
-            let c = ind_vals.get(cind).copied().unwrap_or(0);
+            let mut c = ind_vals.get(cind).copied().unwrap_or(0);
+            if c > 0{
+                c -= 1;
+            }
             coverage_results.extend(new_edges.iter().map(|&edge| (c, edge)));
             
         }
