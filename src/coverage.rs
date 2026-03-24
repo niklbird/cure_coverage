@@ -1,12 +1,13 @@
-use std::{collections::{HashMap, HashSet}, env, process::Command, ptr, time::Duration};
+use std::{collections::{HashMap, HashSet}, env, process::Command, ptr};
 use libc::{shmat, shmctl, shmget, shmdt, IPC_CREAT, IPC_RMID};
 use smallvec::SmallVec;
-use rayon::{iter::IntoParallelRefIterator, *};
+use rayon::*;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
 use std::thread;
+
 /// Setup shared memory segment. Signal this to target binary over env variable.
 /// @param map_size: Size of the shared memory map
 fn setup(map_size: usize) -> Option<( *mut u8, i32)>{
@@ -231,25 +232,11 @@ pub fn majority_vote_counters(all_counters: &Vec<u16>) -> usize {
 
     // Find median value in vector
     canidates.sort_by(|a, b| a.0.cmp(&b.0));
-    let median_index = canidates[canidates.len() / 2].1;
+    let median_index = canidates[canidates.len()- 1].1;
     return median_index;
 }
 
 
-
-
-// Safe wrapper for *mut u8 that can be sent between threads
-struct SafePointer(*mut u8);
-unsafe impl Send for SafePointer {}
-impl Drop for SafePointer{
-    fn drop(&mut self) {
-        unsafe {
-            // exactly-once deallocation here; pick the right one:
-            libc::free(self.0 as *mut libc::c_void)
-            // or libc::munmap(self.ptr.as_ptr().cast(), self.len)
-        }
-    }
-}
 
 fn internal_loop(indicators: Vec<usize>, zero_wrap: bool, build_iter: Vec<usize>, max_val: usize, shm_id: i32, stop: Arc<AtomicBool>) -> (Vec<(u16, usize)>, HashSet<usize>){
     let indicator_set = indicators.iter().cloned().collect::<HashSet<_>>();
@@ -260,15 +247,10 @@ fn internal_loop(indicators: Vec<usize>, zero_wrap: bool, build_iter: Vec<usize>
     let mut coverage_results = vec![];
     let mut new_edges: SmallVec<[usize; 64]> = SmallVec::new();        
 
-    let mut hc1: Vec<u8> = Vec::new();
     let shm_addr = unsafe { shmat(shm_id, ptr::null_mut(), 0) } as *mut u8;
 
     loop {
         new_edges.clear();
-        let hit_count1 = unsafe { *shm_addr.add(61951)};
-        hc1.push(hit_count1.into());
-
-
         for &i in build_iter.iter() { 
 
             let hit_count = unsafe { *shm_addr.add(i) };
@@ -287,14 +269,13 @@ fn internal_loop(indicators: Vec<usize>, zero_wrap: bool, build_iter: Vec<usize>
 
 
             let (abs, wrapped) = abs_from(p, hit_count);
+      
 
             // Only look at new edges if they are not an IF
             if p == 0 && !indicator_set.contains(&i) {
-                new_edges.push(i);
+                new_edges.push(i);                
             }
 
-            // If indicator set contains this, track the actual coverage as its important for the score
-            *pc += abs as u16;
             if indicator_set.contains(&i) {
                 let ac = unsafe{actual_coverage.get_unchecked_mut(i)};
                 *ac = ac.wrapping_add(abs as u16);
@@ -302,6 +283,8 @@ fn internal_loop(indicators: Vec<usize>, zero_wrap: bool, build_iter: Vec<usize>
                     *ac = ac.wrapping_sub(1);
                 }
             }
+            // If indicator set contains this, track the actual coverage as its important for the score
+            *pc += abs as u16;
 
         }
 
@@ -310,7 +293,7 @@ fn internal_loop(indicators: Vec<usize>, zero_wrap: bool, build_iter: Vec<usize>
         if !new_edges.is_empty() {
             let ind_vals: Vec<u16> = indicators.iter().map(|&ind| actual_coverage[ind]).collect();
         
-            let cind = majority_vote_counters(&ind_vals) ;
+            let cind = majority_vote_counters(&ind_vals);
             let mut c = ind_vals.get(cind).copied().unwrap_or(0);
             if c > 0{
                 c -= 1;
@@ -322,8 +305,6 @@ fn internal_loop(indicators: Vec<usize>, zero_wrap: bool, build_iter: Vec<usize>
             break;
         }
     }
-    thread::sleep(Duration::from_millis(1));
-
 
     let mut all_counters = HashSet::new();
     for i in 0..max_val{
@@ -333,10 +314,9 @@ fn internal_loop(indicators: Vec<usize>, zero_wrap: bool, build_iter: Vec<usize>
     }
 
     cleanup(shm_addr, shm_id);
-    thread::sleep(Duration::from_secs(1));
-    println!("Exiting now");
     return (coverage_results, all_counters);
 }
+
 
 /// Tracks coverage over the execution of the binary.
 /// @param cmd: Command to run
@@ -360,24 +340,16 @@ pub fn track_coverage(cmd: &str, indicators: &Vec<usize>, known_counters: &HashS
     }
 
     let (_, shm_id) = shm_addr_o.unwrap();
-    let indicator_set = indicators.iter().cloned().collect::<HashSet<_>>();
 
     let mut child = Command::new("sh").arg("-c").arg(cmd)
         .spawn()
         .expect("Failed to start target binary");
 
-    let mut prev_coverage = vec![0u16; max_val];
-    let mut actual_coverage = vec![0u16; max_val]; // This is necessary as LLVM wrapps to 255 -> 1
 
     // let mut coverage_results = vec![];
     let mut has_crashed = false;
-    let mut new_edges: SmallVec<[usize; 64]> = SmallVec::new();        
 
-    let mut hc1: Vec<u8> = Vec::new();
-    let mut bc = 0;
-
-
-    let workers = 5;
+    let workers = 4;
     let stop = Arc::new(AtomicBool::new(false));
     let mut handles = vec![];
     let b_len = build_iter.len() / workers;
@@ -387,9 +359,9 @@ pub fn track_coverage(cmd: &str, indicators: &Vec<usize>, known_counters: &HashS
         let cindic = indicators.clone();
         let stop_clone = Arc::clone(&stop);
         let mut new_build_iter = build_iter[i*b_len..(i+1)*b_len].to_vec();
-        for i in indicators{
-            new_build_iter.push(i.clone()); // This is necessary since we split the iter. But we must ensure each threat tracks the indicators so they have valid values
-        }
+        // let mut new_build = indicators.clone();
+        new_build_iter.extend(indicators);
+
         let handle = thread::spawn(move || {
             internal_loop(cindic, zero_wrap, new_build_iter, max_val, shm_id, stop_clone)
         });
@@ -418,98 +390,6 @@ pub fn track_coverage(cmd: &str, indicators: &Vec<usize>, known_counters: &HashS
         coverage_results.extend(res.0);
     }
 
-    // loop {
-    //     new_edges.clear();
-    //     let hit_count1 = unsafe { *shm_addr.add(61951)};
-    //     hc1.push(hit_count1.into());
-
-
-    //     for &i in build_iter.iter() { 
-    //         let hit_count = unsafe { *shm_addr.add(i) };
-    //         if hit_count == 0 && !zero_wrap{
-    //             continue;
-    //         }
-    //         let pc = unsafe { prev_coverage.get_unchecked_mut(i)};
-    //         let p = *pc;
-                        
-    //         // If no hit, skip. If the counter value > 0, only look at it if the counter was 0 previously (new edge). If zero wrap is enabled, we must check anyway because it could have wrapped to 0.
-    //         if hit_count == 0 && (!zero_wrap ||  p == 0){
-    //             continue;
-    //         }
-    //         let (abs, wrapped) = abs_from(p, hit_count);
-
-    //         // Only look at new edges if they are not an IF
-    //         if p == 0 && !indicator_set.contains(&i) {
-    //             new_edges.push(i);
-    //         }
-
-    //         // If indicator set contains this, track the actual coverage as its important for the score
-    //         *pc += abs as u16;
-    //         if indicator_set.contains(&i) {
-    //             let ac = unsafe{actual_coverage.get_unchecked_mut(i)};
-    //             *ac = ac.wrapping_add(abs as u16);
-    //             if wrapped && !zero_wrap && *ac > 0 {
-    //                 *ac = ac.wrapping_sub(1);
-    //             }
-    //         }
-
-    //     }
-
-    //     // If a new edge is found, check the IFs to find which object in the batch caused the increase.
-    //     if !new_edges.is_empty() {
-    //         let ind_vals: Vec<u16> = indicators.iter().map(|&ind| actual_coverage[ind]).collect();
-        
-    //         let cind = majority_vote_counters(&ind_vals) ;
-    //         let mut c = ind_vals.get(cind).copied().unwrap_or(0);
-    //         if c > 0{
-    //             c -= 1;
-    //         }
-    //         coverage_results.extend(new_edges.iter().map(|&edge| (c, edge)));
-            
-    //     }
-
-    //     if bc > 10{
-    //         bc = 0;
-    //                 // Check if process has exited
-    //         if let Ok(status) = child.try_wait() {
-    //             if status.is_some() {
-    //                 if status.unwrap().code().unwrap_or(0) != 0{
-    //                     has_crashed = true;
-    //                 }
-    //                 break;
-    //             }
-    //         }
-    //     }
-    //     bc += 1;
-
-
-    // }
-
-    // let mut total = 0.0;
-    // let mut subtract = 0;
-    // for i in 0..hc1.len() - 1{
-    //     if hc1[i + 1] > hc1[i]{
-    //         total += (hc1[i + 1] - hc1[i]) as f64;
-    //     }
-    //     else if hc1[i + 1] == hc1[i]{
-    //         subtract += 1;
-    //     }
-    //     else{
-    //         total += (hc1[i + 1] + 255 - hc1[i]) as f64;
-    //     }
-        
-    // }
-    // total /= (hc1.len() - subtract) as f64;
-    // println!("{total}");
-
-    // After execution, add all non-zero counters to known counters
-    let mut all_counters = HashSet::new();
-    for i in 0..max_val{
-        if prev_coverage[i] > 0{
-            all_counters.insert(i);
-        }
-    }
-
     return (coverage_results, all_counters, has_crashed);
 }
 
@@ -534,7 +414,6 @@ pub fn print_cov_map(cov: Vec<(u16, usize)>){
 
 
 /// Absolute different. Since hit_count wrappes, this calculates the absolute increase even if it wrapped.
-// #[inline]
 #[inline]
 fn abs_from(prev_cov_val: u16, hit_count: u8) -> (u8, bool) {
     let modo = prev_cov_val as u8; // directly get low byte

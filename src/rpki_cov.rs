@@ -15,7 +15,7 @@ impl CoverageFactory{
         let (cov_res, new_known, crashed) = coverage::track_coverage(cmd, &self.indicators, &self.known_counters, self.max_val, self.map_size, self.zero_wrap);
         self.known_counters.extend(new_known);
 
-        println!("Total coverage {}/{}", self.known_counters.len(), self.max_val);
+        // println!("Total coverage {}/{}", self.known_counters.len(), self.max_val);
     
         (cov_res, crashed)
     }
