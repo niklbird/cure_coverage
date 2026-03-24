@@ -1,8 +1,16 @@
 [package]
-name = "cover"
+name = "cure_coverage"
 version = "0.1.0"
 edition = "2021"
+author = "Niklas Vogel"
 
 [dependencies]
 libc = "0.2.169"
 smallvec = "1.13.2"
+serde_json = "1.0.140"
+serde = {version ="1.0.219", features = ["serde_derive"]}
+rayon = "1.7"
+
+[features]
+default = []
+rpki = []
