@@ -1,7 +1,7 @@
 # cure_coverage
 
 ![Rust](https://img.shields.io/badge/language-Rust-orange.svg) 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![License](https://img.shields.io/badge/license-GPL3-blue.svg)
 
 `cure_coverage` is a Rust library designed to extract coverage information from a binary instrumented with [AFL++](https://github.com/AFLplusplus/AFLplusplus) through shared memory mapped counters. It enables users to efficiently obtain branch coverage, which can be utilized for fuzzing purposes.
 
@@ -85,7 +85,7 @@ cargo build --release
 ```
 
 ## License
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the GPL3 License - see the [LICENSE](LICENSE) file for details.
 
 ## Contributions
 Contributions are welcome! Please open an issue or submit a pull request if you’d like to improve `cure_coverage`.
