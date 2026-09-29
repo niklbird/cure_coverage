@@ -6,16 +6,17 @@ pub struct CoverageFactory{
     pub max_val: usize,
     pub indicators: Vec<usize>,
     pub known_counters: HashSet<usize>,
-    pub zero_wrap: bool // Does value wrap to zero (yes for Rust, no for C / C++)
+    pub zero_wrap: bool, // Does value wrap to zero (yes for Rust, no for C / C++)
+    pub new_counters: HashSet<usize>
 }
 
 impl CoverageFactory{
     pub fn execute_coverage(&mut self, cmd: &str) -> (Vec<(u16, usize)>, bool){
     
         let (cov_res, new_known, crashed) = coverage::track_coverage(cmd, &self.indicators, &self.known_counters, self.max_val, self.map_size, self.zero_wrap);
-        self.known_counters.extend(new_known);
-
-        // println!("Total coverage {}/{}", self.known_counters.len(), self.max_val);
+        self.known_counters.extend(&new_known);
+        self.new_counters = new_known;
+        println!("Total coverage {}/{}", self.known_counters.len(), self.max_val);
     
         (cov_res, crashed)
     }
@@ -26,7 +27,8 @@ impl CoverageFactory{
             max_val: 0,
             indicators: vec![],
             known_counters: HashSet::new(),
-            zero_wrap: false
+            zero_wrap: false,
+            new_counters: HashSet::new()
         }
     }
 }

@@ -2,10 +2,12 @@ use std::{collections::{HashMap, HashSet}, env, process::Command, ptr};
 use libc::{shmat, shmctl, shmget, shmdt, IPC_CREAT, IPC_RMID};
 use smallvec::SmallVec;
 use rayon::*;
+
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+
 use std::thread;
 
 /// Setup shared memory segment. Signal this to target binary over env variable.
@@ -93,6 +95,42 @@ pub fn execute_with_coverage(cmd: &str, map_size: usize) -> Vec<u16>{
     cleanup(shm_addr, shm_id);
 
     return actual_coverage;
+}
+
+
+/// Execute the target binary to completion and read the AFL coverage bitmap
+/// exactly once, *after* the process has exited.
+///
+///
+/// Returns an empty vector if shared memory setup or the target launch fails.
+pub fn execute_with_coverage_once(cmd: &str, map_size: usize) -> Vec<u16> {
+    let Some((shm_addr, shm_id)) = setup(map_size) else {
+        eprintln!("ERROR: Could not setup shared memory");
+        return vec![];
+    };
+
+    // Run to completion. stdio is inherited so the target's output is visible,
+    // and `status()` blocks until the process has fully exited.
+    let status = Command::new("sh").arg("-c").arg(cmd).status();
+
+    match status {
+        Ok(s) if !s.success() => eprintln!("source_cov: target exited with {}", s),
+        Err(e) => {
+            eprintln!("source_cov: failed to run target: {}", e);
+            cleanup(shm_addr, shm_id);
+            return vec![];
+        }
+        _ => {}
+    }
+
+    // Single, consistent pass over the now-final map.
+    let mut coverage = vec![0u16; map_size];
+    for (i, slot) in coverage.iter_mut().enumerate() {
+        *slot = unsafe { *shm_addr.add(i) } as u16;
+    }
+
+    cleanup(shm_addr, shm_id);
+    coverage
 }
 
 
